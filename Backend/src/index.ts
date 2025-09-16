@@ -721,6 +721,86 @@ app.get("/api/reports", auth, async (req: AuthRequest, res: Response) => {
   }
 });
 
+// IMPORTANT: This route MUST come BEFORE /api/reports/:id to avoid conflicts
+app.get("/api/reports/recent", auth, async (req: AuthRequest, res: Response) => {
+  try {
+    // Get current user to check if admin
+    const currentUser = await User.findById(req.userId);
+    if (!currentUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Build query based on user role
+    const query: any = {};
+
+    // If user is not admin, only show their own reports
+    if (currentUser.role !== 'admin') {
+      query.userId = req.userId;
+    }
+    // If admin, show all reports (no additional filter needed)
+
+    // Get the 4 most recent reports
+    const recentReports = await Report.find(query)
+      .populate('userId', 'name email')
+      // Only populate departmentId if it exists in your schema
+      // .populate('departmentId', 'name') 
+      .sort({ createdAt: -1 }) // Sort by creation date, newest first
+      .limit(4) // Limit to 4 reports
+      .select('description location category severity status createdAt updatedAt images') // Select specific fields for performance
+      .exec();
+
+    // Add computed fields for each report
+    const reportsWithMetadata = recentReports.map(report => {
+      const reportObj = report.toObject();
+      
+      // Safely get userId - handle both populated and non-populated cases
+      const userId = typeof report.userId === 'object' 
+        ? (report.userId as any)._id.toString() 
+        : (report.userId as any).toString();
+
+      return {
+        ...reportObj,
+        timeSinceSubmission: new Date().getTime() - report.createdAt.getTime(),
+        timeAgo: getTimeAgo(report.createdAt),
+        isOwnReport: userId === req.userId,
+        firstImage: report.images && report.images.length > 0 ? report.images[0] : null,
+        imageCount: report.images ? report.images.length : 0
+      };
+    });
+
+    res.json({
+      message: `${reportsWithMetadata.length} recent report(s) fetched successfully`,
+      count: reportsWithMetadata.length,
+      reports: reportsWithMetadata,
+      maxRequested: 4,
+      hasMore: recentReports.length === 4 // Indicates if there might be more reports
+    });
+
+  } catch (error: any) {
+    console.error("Get recent reports error:", error);
+    res.status(500).json({ 
+      message: "Failed to fetch recent reports", 
+      error: error.message 
+    });
+  }
+});
+
+// Helper function to calculate time ago
+function getTimeAgo(date: Date): string {
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+  if (diffDays < 30) return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+  
+  return date.toLocaleDateString();
+}
+
 // ---------------------- GET /reports/:id ----------------------
 app.get("/api/reports/:id", auth, async (req: AuthRequest, res: Response) => {
   try {
@@ -773,6 +853,8 @@ app.get("/api/reports/:id", auth, async (req: AuthRequest, res: Response) => {
     });
   }
 });
+
+
 
 // ---------------------- START SERVER ----------------------
 app.listen(3000, () => {
